@@ -1,11 +1,12 @@
 CXX = g++
 CXXFLAGS = -std=c++11 -Wall -pthread
 TARGET = wifihack
+SOURCE = main.cpp
 
 all: $(TARGET)
 
-$(TARGET): c.cpp
-	$(CXX) $(CXXFLAGS) -o $(TARGET) c.cpp
+$(TARGET): $(SOURCE)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SOURCE)
 
 clean:
 	rm -f $(TARGET)
