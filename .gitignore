@@ -1,0 +1,28 @@
+# Скомпилированные файлы
+wifihack
+*.o
+*.exe
+
+# Файлы захвата
+*.cap
+*.csv
+*.netxml
+*.log.csv
+
+# Хэши
+*.22000
+*.hccapx
+
+# Словари
+rockyou*.zip
+*.txt
+*.dict
+
+# Временные файлы
+*.tmp
+*.swp
+*.bak
+
+# Системные
+.DS_Store
+Thumbs.db
