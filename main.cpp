@@ -41,6 +41,20 @@ const std::string UNDERLINE = "\033[4m";
 #include <sstream>
 #include <vector>
 #include <string>
+std::string shellEscape(const std::string& arg) {
+    std::string escaped;
+    escaped += '\'';
+    for (char c : arg) {
+        if (c == '\'') {
+            escaped += "'\\''";  // экранируем одинарную кавычку
+        } else {
+            escaped += c;
+        }
+    }
+    escaped += '\'';
+    return escaped;
+}
+
 
 class TimedCommandReader {
 private:
@@ -341,19 +355,6 @@ void convert_to_22000() {
     }
 }
 // Экранирование спецсимволов для защиты от инъекций
-std::string shellEscape(const std::string& arg) {
-    std::string escaped;
-    escaped += '\'';
-    for (char c : arg) {
-        if (c == '\'') {
-            escaped += "'\\''";  // экранируем одинарную кавычку
-        } else {
-            escaped += c;
-        }
-    }
-    escaped += '\'';
-    return escaped;
-}
 
 // Проверка имени файла (только буквы, цифры, точки, дефисы, подчёркивания)
 bool isSafeFilename(const std::string& filename) {
